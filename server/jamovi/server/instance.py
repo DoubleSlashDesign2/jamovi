@@ -583,8 +583,7 @@ class Instance:
                     request.analysisId,
                     request.name,
                     request.ns,
-                    request.options,
-                    request.enabled)
+                    request.options)
                 self._data.is_edited = True
 
                 response = jcoms.AnalysisResponse()

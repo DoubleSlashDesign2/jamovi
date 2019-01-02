@@ -8,6 +8,8 @@ from itertools import chain
 from .instance import Instance
 from .analyses import AnalysisIterator
 from .enginemanager import EngineManager
+from .scheduler import Scheduler
+from .remotequeue import RemoteQueue
 from .settings import Settings
 
 
@@ -48,7 +50,7 @@ class SessionAnalyses:
 
 class Session(dict):
 
-    def __init__(self, data_path, id):
+    def __init__(self, data_path, id, task_queue_url=None):
         self._path = data_path
         self._id = id
         self._session_path = os.path.join(data_path, id)
@@ -56,10 +58,15 @@ class Session(dict):
         self._analyses = SessionAnalyses(self)
         self._analysis_listeners = [ ]
         self._running = True
+        self._em = None
 
-        self._em = EngineManager(data_path, self._analyses)
-        self._em.start()
-        self._em.add_engine_listener(self._on_engine_event)
+        if task_queue_url is not None:
+            self._scheduler = RemoteQueue(self._analyses, task_queue_url)
+        else:
+            self._em = EngineManager(data_path)
+            self._em.start()
+            self._em.add_engine_listener(self._on_engine_event)
+            self._scheduler = Scheduler(self._analyses, self._em)
 
         self._start_gc()
 
@@ -77,7 +84,8 @@ class Session(dict):
         return instance
 
     async def restart_engines(self):
-        await self._em.restart_engines()
+        if self._em is not None:
+            await self._em.restart_engines()
 
     def rerun_analyses(self):
         for analysis in self._analyses:

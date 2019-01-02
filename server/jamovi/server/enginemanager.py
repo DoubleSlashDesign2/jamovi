@@ -17,7 +17,7 @@ from . import jamovi_pb2 as jcoms
 from .analyses import Analysis
 
 import logging
-import asyncio
+from asyncio import get_event_loop
 from asyncio import Queue
 
 log = logging.getLogger('jamovi')
@@ -47,7 +47,7 @@ class Engine:
         self._stopping = False
         self._stopped = False
 
-        self._ioloop = asyncio.get_event_loop()
+        self._ioloop = get_event_loop()
 
     @property
     def is_waiting(self):
@@ -172,6 +172,8 @@ class Engine:
 
     def send(self, analysis, run=True):
 
+        print('sending ', analysis.id, run, 'on', self)
+
         self._message_id += 1
         self.analysis = analysis
 
@@ -226,35 +228,29 @@ class Engine:
             else:
                 self.analysis.op.set_result(message)
             self.analysis = None
-            self._parent._send_next()
+            self._parent._notify_slot_available()
         else:
             results = jcoms.AnalysisResponse()
             results.ParseFromString(message.payload)
 
             if results.revision == self.analysis.revision:
-                complete = False
-                if results.incAsText and results.status == jcoms.AnalysisStatus.Value('ANALYSIS_COMPLETE'):
-                    complete = True
-                elif results.incAsText and results.status == jcoms.AnalysisStatus.Value('ANALYSIS_ERROR'):
-                    complete = True
-                elif self.status == Engine.Status.INITING and results.status == jcoms.AnalysisStatus.Value('ANALYSIS_INITED'):
-                    complete = True
-
-                self.analysis.set_results(results)
-
-                if complete:
+                if message.status != jcoms.Status.Value('IN_PROGRESS'):
+                    self.analysis.status = Analysis.Status(results.status)
+                    self.analysis.set_results(results)
                     self.status = Engine.Status.WAITING
                     self.analysis = None
-                    self._parent._send_next()
+                    self._parent._notify_slot_available()
+                else:
+                    self.analysis.set_results(results)
 
 
 class EngineManager:
 
-    def __init__(self, data_path, analyses):
+    def __init__(self, data_path):
 
         self._data_path = data_path
-        self._analyses = analyses
-        self._analyses.add_options_changed_listener(self._send_next)
+        self._listeners = [ ]
+        self._n_slots = 3
 
         if platform.uname().system == 'Windows':
             self._conn_root = "ipc://{}".format(str(uuid4()))
@@ -264,24 +260,34 @@ class EngineManager:
 
         self._engine_listeners  = [ ]
 
-        self._engines = [ ]
-        for index in range(3):
+        self._engines = [ None ] * self._n_slots
+        for index in range(self._n_slots):
             conn_path = '{}-{}'.format(self._conn_root, index)
-            engine = Engine(
+            self._engines[index] = Engine(
                 parent=self,
                 data_path=data_path,
                 conn_path=conn_path)
-            self._engines.append(engine)
 
         self._restart_task = Queue()
 
     def start(self):
-        for index in range(len(self._engines)):
-            self._engines[index].start()
+        for engine in self._engines:
+            engine.start()
 
     def stop(self):
-        for index in range(len(self._engines)):
-            self._engines[index].stop()
+        for engine in self._engines:
+            engine.stop()
+
+    def __getitem__(self, index):
+        return self._engines[index]
+
+    def __iter__(self):
+        for engine in self._engines:
+            yield engine
+
+    @property
+    def n_slots(self):
+        return self._n_slots
 
     async def restart_engines(self):
         for engine in self._engines:
@@ -292,28 +298,18 @@ class EngineManager:
     def _notify_engine_restarted(self, engine):
         self._restart_task.task_done()
 
+    def add_slot_available_listener(self, listener):
+        self._listeners.append(('slot-available', listener))
+
     def add_engine_listener(self, listener):
-        self._engine_listeners.append(listener)
+        self._listeners.append(('engine-event', listener))
 
-    def _notify_engine_event(self, event):
-        for listener in self._engine_listeners:
-            listener(event)
+    def _notify_slot_available(self, *args):
+        for listener in self._listeners:
+            if listener[0] == 'slot-available':
+                listener[1](*args)
 
-    def _send_next(self, analysis=None):
-        if analysis is not None:
-            for engine in self._engines:
-                if analysis is engine.analysis:
-                    engine.send(analysis)
-        for engine in self._engines:
-            if engine.is_waiting:
-                for analysis in self._analyses.needs_init:
-                    engine.send(analysis, False)
-                    break
-            if engine.is_waiting:
-                for analysis in self._analyses.needs_op:
-                    engine.send(analysis, True)
-                    break
-            if engine.is_waiting:
-                for analysis in self._analyses.needs_run:
-                    engine.send(analysis, True)
-                    break
+    def _notify_engine_event(self, *args):
+        for listener in self._listeners:
+            if listener[0] == 'engine-event':
+                listener[1](*args)

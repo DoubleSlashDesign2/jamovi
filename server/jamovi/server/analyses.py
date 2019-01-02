@@ -82,7 +82,6 @@ class Analysis:
         self.results = results
         self.options.set(results.options)
         self.changes.clear()
-        self.status = Analysis.Status(results.status)
         self.clear_state = False
         self.parent._notify_results_changed(self)
 
@@ -189,7 +188,7 @@ class Analyses:
             for id in ids:
                 self.recreate(id).rerun()
 
-    def _construct(self, id, name, ns, options_pb, enabled):
+    def _construct(self, id, name, ns, options_pb, enabled=None):
 
         try:
             module = Modules.instance().get(ns)
@@ -211,6 +210,9 @@ class Analyses:
             option_defs = a_defn['options']
             results_defs = r_defn['items']
 
+            if enabled is None:
+                enabled = not a_defn.get('arbitraryCode', False)
+
             options = Options.create(option_defs, results_defs)
             options.set(options_pb)
 
@@ -228,8 +230,7 @@ class Analyses:
             analysis_pb.analysisId,
             analysis_pb.name,
             analysis_pb.ns,
-            analysis_pb.options,
-            False)
+            analysis_pb.options)
 
         analysis.results = analysis_pb
         analysis.status = Analysis.Status.COMPLETE
@@ -237,9 +238,9 @@ class Analyses:
 
         return analysis
 
-    def create(self, id, name, ns, options_pb, enabled):
+    def create(self, id, name, ns, options_pb):
 
-        analysis = self._construct(id, name, ns, options_pb, enabled)
+        analysis = self._construct(id, name, ns, options_pb, True)
         self._analyses.append(analysis)
         self._notify_options_changed(analysis)
 
